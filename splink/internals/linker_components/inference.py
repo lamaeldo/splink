@@ -292,6 +292,104 @@ class LinkerInference:
 
         return predictions
 
+    def predict_sharded(
+        self,
+        num_shards: int,
+        threshold_match_probability: float | None = None,
+        threshold_match_weight: float | None = None,
+    ) -> SplinkDataFrame:
+        """Create a dataframe of scored pairwise comparisons using sharding.
+
+        The left input dataset is randomly assigned to ``num_shards`` partitions,
+        and prediction is run once for each shard with an additional blocking rule
+        ``l.shard = <n>``.
+
+        Args:
+            num_shards (int): Number of shards to split the left dataset into. Must
+                be between 1 and 100.
+            threshold_match_probability (float, optional): If specified, filter the
+                results to include only pairwise comparisons with a
+                ``match_probability`` above this threshold. Defaults to ``None``.
+            threshold_match_weight (float, optional): If specified, filter the
+                results to include only pairwise comparisons with a
+                ``match_weight`` above this threshold. Defaults to ``None``.
+
+        Returns:
+            SplinkDataFrame: A ``SplinkDataFrame`` of the scored pairwise
+                comparisons.
+
+        """
+
+        if self._linker._sql_dialect_str != "duckdb":
+            raise NotImplementedError(
+                "predict_sharded is only implemented for duckdb backends"
+            )
+        if not 1 <= num_shards <= 100:
+            raise ValueError("num_shards must be between 1 and 100")
+
+        cache = self._linker._intermediate_table_cache
+        pipeline = CTEPipeline()
+        df_concat_with_tf = compute_df_concat_with_tf(self._linker, pipeline)
+
+        sds_col = (
+            self._linker._settings_obj.column_info_settings.source_dataset_column_name
+            or "source_dataset"
+        )
+        sql = f"""
+            select *,
+                   case
+                       when {sds_col} = (
+                           select min({sds_col}) from {df_concat_with_tf.physical_name}
+                       ) then 1 + floor(random() * {num_shards})
+                   end as shard
+            from {df_concat_with_tf.physical_name}
+        """
+        df_concat_with_tf = self._linker._db_api._sql_to_splink_dataframe(
+            sql,
+            "__splink__df_concat_with_tf",
+            df_concat_with_tf.physical_name,
+        )
+        cache["__splink__df_concat_with_tf"] = df_concat_with_tf
+
+        original_brs = (
+            self._linker._settings_obj._blocking_rules_to_generate_predictions
+        )
+        results: list[SplinkDataFrame] = []
+        try:
+            for shard in range(1, num_shards + 1):
+                shard_br = BlockingRule(
+                    f"l.shard = {shard}", self._linker._sql_dialect_str
+                )
+                self._linker._settings_obj._blocking_rules_to_generate_predictions = (
+                    original_brs + [shard_br]
+                )
+                df_pred = self.predict(
+                    threshold_match_probability=threshold_match_probability,
+                    threshold_match_weight=threshold_match_weight,
+                    materialise_after_computing_term_frequencies=False,
+                    materialise_blocked_pairs=False,
+                )
+                results.append(df_pred)
+        finally:
+            self._linker._settings_obj._blocking_rules_to_generate_predictions = (
+                original_brs
+            )
+
+        union_sql = " UNION ALL ".join(
+            f"select * from {df.physical_name}" for df in results
+        )
+        predictions = self._linker._db_api._sql_to_splink_dataframe(
+            union_sql,
+            "__splink__df_predict",
+            f"__splink__df_predict_{ascii_uid(8)}",
+        )
+
+        for df in results:
+            df.drop_table_from_database_and_remove_from_cache()
+        df_concat_with_tf.drop_table_from_database_and_remove_from_cache()
+
+        return predictions
+
     def _score_missing_cluster_edges(
         self,
         df_clusters: SplinkDataFrame,
