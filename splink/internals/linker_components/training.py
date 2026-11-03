@@ -367,65 +367,6 @@ class LinkerTraining:
         record_sample_proportion: float = 0.01,
         prior_coefficient_bound: float = 12.0,
     ) -> PairwisePriorTrainingSession:
-        """Estimate comparison parameters with a frequency-dependent training prior.
-
-        Candidate pairs match exactly on every column in ``blocking_columns``.
-        Within this session, the match prior is
-        ``logit(p_i) = intercept + coefficient * (-log(f_i) - center)``, where
-        ``f_i = max(n_left, n_right)`` counts the full blocking tuple in each
-        source dataset. Counts use the complete inputs even when ``max_pairs``
-        samples training candidates. The center is weighted by training pairs.
-
-        The coefficient starts at zero and can take either sign. Each EM
-        iteration fits the intercept and coefficient alongside native M/U
-        updates. The intercept makes the pair-weighted mean prior equal the
-        estimated session match proportion. U is fixed by default.
-
-        Comparisons using the blocking columns are excluded as in ordinary EM.
-        Trained comparison parameters enter the usual per-level median
-        aggregation. The learned prior is local to training: prediction still
-        uses the linker's global prior and configured TF adjustments. These
-        sessions are excluded from scalar global-prior back-calculation.
-
-        This is an optional experimental estimator. A stable fit need not be
-        accurate, and the prior imposes no one-to-one matching constraint.
-
-        Args:
-            blocking_columns: Nonempty list of plain columns present in every
-                input table. Precompute derived keys as columns; arbitrary
-                blocking SQL and indexed column references are not supported.
-            estimate_without_term_frequencies: Ignore TF adjustments during
-                training and group exact comparison/frequency counts. Defaults
-                to False.
-            fix_m_probabilities: Keep M fixed. Defaults to False.
-            fix_u_probabilities: Keep U fixed. Defaults to True. At least one
-                of M or U must be free.
-            max_pairs: Approximate training-pair cap using ordinary EM sampling.
-                Defaults to None, which uses all blocked pairs.
-            record_sample_proportion: Preliminary sampling fraction for estimating
-                the blocked population when max_pairs is set. Defaults to 0.01.
-            prior_coefficient_bound: Positive finite absolute bound for the
-                unpenalised signed coefficient. Defaults to 12.
-
-        Returns:
-            A session with native history charts, immutable ``prior_history``
-            records, and a ``converged`` flag. Convergence considers both
-            comparison parameters and context-specific prior probabilities.
-
-        Raises:
-            ValueError: If arguments are invalid, blocking consumes every
-                comparison, or the session mean reaches zero or one.
-
-        Examples:
-            ```py
-            session = linker.training.estimate_parameters_using_pairwise_prior(
-                ["first_name", "birthplace"],
-                max_pairs=10_000_000,
-            )
-            final_prior = session.prior_history[-1]
-            print(session.converged, final_prior.coefficient)
-            ```
-        """
         if not isinstance(blocking_columns, list) or not blocking_columns:
             raise ValueError("blocking_columns must be a nonempty list of column names")
         if any(not isinstance(c, str) or not c.strip() for c in blocking_columns):
