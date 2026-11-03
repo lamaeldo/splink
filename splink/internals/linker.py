@@ -391,6 +391,8 @@ class Linker:
             ),
         )
         for em_training_session in self._em_training_sessions:
+            if not em_training_session._can_estimate_global_prior:
+                continue
             training_lambda = em_training_session.core_model_settings.probability_two_random_records_match  # noqa: E501
             training_lambda_bf = prob_to_bayes_factor(training_lambda)
             reverse_level_infos = (
@@ -445,6 +447,8 @@ class Linker:
             p = bayes_factor_to_prob(training_lambda_bf)
             recip_prop_matches_estimates.append(1 / p)
 
+        if not recip_prop_matches_estimates:
+            return
         prop_matches_estimate = 1 / median(recip_prop_matches_estimates)
 
         self._settings_obj._probability_two_random_records_match = prop_matches_estimate

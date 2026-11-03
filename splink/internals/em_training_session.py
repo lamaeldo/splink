@@ -73,6 +73,9 @@ class EMTrainingSession:
     holds statistics on the evolution of parameter estimates.  Plots diagnostic charts
     """
 
+    _training_name = "EM"
+    _can_estimate_global_prior = True
+
     def __init__(
         self,
         # TODO: remove linker arg once we unpick the two places we use it
@@ -279,6 +282,19 @@ class EMTrainingSession:
         pipeline.enqueue_list_of_sqls(sqls)
         return self.db_api.sql_pipeline_to_splink_dataframe(pipeline)
 
+    def _run_expectation_maximisation(
+        self, cvv: SplinkDataFrame
+    ) -> List[CoreModelSettings]:
+        return expectation_maximisation(
+            db_api=self.db_api,
+            training_settings=self.training_settings,
+            estimate_without_term_frequencies=self.estimate_without_term_frequencies,
+            core_model_settings=self.core_model_settings,
+            unique_id_input_columns=self.unique_id_input_columns,
+            training_fixed_probabilities=self.training_fixed_probabilities,
+            df_comparison_vector_values=cvv,
+        )
+
     def _train(self, cvv: SplinkDataFrame | None = None) -> CoreModelSettings:
         if cvv is None:
             self._ensure_em_sampling_settings()
@@ -304,20 +320,12 @@ class EMTrainingSession:
         # Compute the new params, populating the paramters in the copied settings object
         # At this stage, we do not overwrite any of the parameters
         # in the original (main) setting object
-        core_model_settings_history = expectation_maximisation(
-            db_api=self.db_api,
-            training_settings=self.training_settings,
-            estimate_without_term_frequencies=self.estimate_without_term_frequencies,
-            core_model_settings=self.core_model_settings,
-            unique_id_input_columns=self.unique_id_input_columns,
-            training_fixed_probabilities=self.training_fixed_probabilities,
-            df_comparison_vector_values=cvv,
-        )
+        core_model_settings_history = self._run_expectation_maximisation(cvv)
         self.core_model_settings = core_model_settings_history[-1]
         self._core_model_settings_history = core_model_settings_history
 
         rule = self._blocking_rule_for_training.blocking_rule_sql
-        training_desc = f"EM, blocked on: {rule}"
+        training_desc = f"{self._training_name}, blocked on: {rule}"
 
         # we have a copy of the original core model settings - this is what we
         # add trained values too, and return.
