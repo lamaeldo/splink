@@ -21,10 +21,7 @@ from splink.internals.vertically_concatenate import (
     split_df_concat_with_tf_into_two_tables_sqls,
 )
 
-from .expectation_maximisation import (
-    compute_new_parameters_sql,
-    compute_proportions_for_new_parameters,
-)
+from .expectation_maximisation import compute_proportions_for_new_parameters
 
 # https://stackoverflow.com/questions/39740632/python-type-hinting-without-cyclic-imports
 if TYPE_CHECKING:
@@ -242,17 +239,13 @@ def _accumulate_u_counts_from_chunk_and_check_min_count(
 
     pipeline.enqueue_list_of_sqls(comparison_vector_sqls)
 
-    # Add dummy match_probability column required by compute_new_parameters_sql
-    sql = """
-    select *, cast(0.0 as float8) as match_probability
+    # Each sampled pair contributes one nonmatch to its comparison level.
+    gamma = comparison._gamma_column_name
+    sql = f"""
+    select {gamma} as comparison_vector_value, count(*) as u_count
     from __splink__df_comparison_vectors
+    group by {gamma}
     """
-    pipeline.enqueue_sql(sql, "__splink__df_predict")
-
-    sql = compute_new_parameters_sql(
-        estimate_without_term_frequencies=False,
-        comparisons=[comparison],
-    )
     pipeline.enqueue_sql(sql, "__splink__m_u_counts")
 
     df_params = db_api.sql_pipeline_to_splink_dataframe(pipeline)
@@ -260,13 +253,6 @@ def _accumulate_u_counts_from_chunk_and_check_min_count(
         chunk_counts = df_params.as_record_list()
     finally:
         df_params.drop_table_from_database_and_remove_from_cache()
-
-    # Drop lambda row: it isn't additive and we don't use it here anyway
-    chunk_counts = [
-        row
-        for row in chunk_counts
-        if row["output_column_name"] != "_probability_two_random_records_match"
-    ]
 
     counts_accumulator.update_from_chunk_counts(chunk_counts)
 
